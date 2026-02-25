@@ -4,11 +4,15 @@ import csv
 import json
 import wave
 from vosk import Model, KaldiRecognizer
+from difflib import SequenceMatcher
+
+def intelligibility_score(ref, hyp):
+    return SequenceMatcher(None, ref, hyp).ratio() * 100
 
 # ---------------- CONFIG ----------------
-MODEL_PATH = "/opt/kaldi/egs/vosk-model-small-hi-0.22"
+MODEL_PATH = "/Users/adityaminhas/Desktop/hindi_asr/vosk-model-small-hi-0.22"
 AUDIO_DIR = "audio_16k"
-REFERENCE_FILE = "references.csv"
+REFERENCsE_FILE = "references.csv"
 OUTPUT_FILE = "z_results.csv"
 SAMPLE_RATE = 16000
 
@@ -23,7 +27,7 @@ GRAMMAR = json.dumps(WORDLIST, ensure_ascii=False)
 
 
 # ---------------- CONFIG ----------------
-MODEL_PATH = "/opt/kaldi/egs/vosk-model-small-hi-0.22"
+MODEL_PATH = "/Users/adityaminhas/Desktop/hindi_asr/vosk-model-small-hi-0.22"
 AUDIO_DIR = "audio_16k"
 REFERENCE_FILE = "references.csv"
 OUTPUT_FILE = "z_results.csv"
@@ -83,22 +87,18 @@ with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
         wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
         hypothesis, confidence = decode_word(wav_path)
 
-
         if hypothesis == "":
             error_type = "deletion"
             z = 0
-        elif hypothesis == reference:
-            error_type = "correct"
-            z = 100
         else:
-            error_type = "substitution"
-            z = 0
-        
+            score = intelligibility_score(reference, hypothesis)
 
+            if score > 90:
+                error_type = "correct"
+            else:
+                error_type = "substitution"
 
-        
-
-
+            z = round(score, 2)
 
         writer.writerow({
             "utt_id": utt_id,
@@ -107,6 +107,12 @@ with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
             "error_type": error_type,
             "z": z
         })
+ 
+                       
+           
+            
+            
+        
 # -------- SESSION Z AGGREGATION --------
 
 z_values = []
