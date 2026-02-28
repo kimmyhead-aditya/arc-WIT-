@@ -10,7 +10,10 @@ def intelligibility_score(ref, hyp):
     return SequenceMatcher(None, ref, hyp).ratio() * 100
 
 # ---------------- CONFIG ----------------
-MODEL_PATH = "/Users/adityaminhas/Desktop/hindi_asr/vosk-model-small-hi-0.22"
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model")
 AUDIO_DIR = "audio_16k"
 REFERENCsE_FILE = "references.csv"
 OUTPUT_FILE = "z_results.csv"
@@ -27,7 +30,10 @@ GRAMMAR = json.dumps(WORDLIST, ensure_ascii=False)
 
 
 # ---------------- CONFIG ----------------
-MODEL_PATH = "/Users/adityaminhas/Desktop/hindi_asr/vosk-model-small-hi-0.22"
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model")
 AUDIO_DIR = "audio_16k"
 REFERENCE_FILE = "references.csv"
 OUTPUT_FILE = "z_results.csv"

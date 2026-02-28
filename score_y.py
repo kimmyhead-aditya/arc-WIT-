@@ -6,7 +6,10 @@ from vosk import Model, KaldiRecognizer
 from difflib import SequenceMatcher
 
 # CONFIG
-MODEL_PATH = "/Users/adityaminhas/Desktop/hindi_asr/vosk-model-small-hi-0.22"
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(BASE_DIR, "model")
 AUDIO_DIR = "audio_sent"
 REFERENCE_FILE = "sentences.csv"
 OUTPUT_FILE = "y_results.csv"

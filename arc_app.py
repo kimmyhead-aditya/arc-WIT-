@@ -3,7 +3,7 @@ ARC Speech Intelligibility Test
 Rewritten for clinical use — bug fixes, mobile/iPad compatibility,
 robust error handling, and professional UI.
 """
-
+import sys
 import streamlit as st
 
 st.set_page_config(
@@ -322,14 +322,14 @@ if sent_err:
 # RECORDING FUNCTIONS
 # =======================
 def start_recording():
-    """Start audio capture using system default mic (device=None for cross-platform)."""
-    st.session_state.audio_buffer = []
     st.session_state.record_error = None
+
+    local_buffer = []
 
     def callback(indata, frames, time_info, status):
         if status:
-            pass  # log but don't crash on status warnings
-        st.session_state.audio_buffer.append(indata.copy())
+            return
+        local_buffer.append(indata.copy())
 
     try:
         stream = sd.InputStream(
@@ -337,11 +337,14 @@ def start_recording():
             channels=1,
             dtype="float32",
             callback=callback,
-            device=None,  # use system default — critical for iPad/laptop compatibility
+            device=None,
         )
         stream.start()
+
         st.session_state.stream = stream
-        st.session_state.recording = True
+        st.session_state._local_buffer = local_buffer
+        st.session_state.recording = True  # move here
+
     except Exception as e:
         st.session_state.record_error = f"Could not open microphone: {e}"
         st.session_state.recording = False
@@ -359,26 +362,33 @@ def stop_recording_and_save(filename):
 
     st.session_state.recording = False
 
-    if not st.session_state.audio_buffer:
-        st.session_state.record_error = "No audio captured. Check microphone permissions."
-        return False
-
     try:
-        audio = np.concatenate(st.session_state.audio_buffer, axis=0)
+        local_buffer = st.session_state.get("_local_buffer", [])
+
+        if not local_buffer:
+            st.session_state.record_error = "No audio captured."
+            return False
+
+        audio = np.concatenate(local_buffer, axis=0)
 
         # Enforce max duration
         max_samples = SAMPLE_RATE * MAX_DURATION_S
         if len(audio) > max_samples:
             audio = audio[:max_samples]
 
-        # Check for silence (RMS < threshold)
+        # Check for silence
         rms = np.sqrt(np.mean(audio**2))
         if rms < 0.001:
             st.session_state.record_error = "Recording appears silent. Please check microphone and try again."
             return False
 
         sf.write(filename, audio, SAMPLE_RATE, subtype="PCM_16")
+
+        # Clear buffer safely
+        st.session_state._local_buffer = []
+
         return True
+
     except Exception as e:
         st.session_state.record_error = f"Failed to save audio: {e}"
         return False
@@ -587,11 +597,11 @@ elif st.session_state.phase == "result":
 
                     # Run scoring scripts
                     z_result = subprocess.run(
-                        ["python3", "score_z.py"],
+                        [sys.executable, "score_z.py"],
                         capture_output=True, text=True, timeout=120
                     )
                     y_result = subprocess.run(
-                        ["python3", "score_y.py"],
+                        [sys.executable, "score_y.py"],
                         capture_output=True, text=True, timeout=120
                     )
 
