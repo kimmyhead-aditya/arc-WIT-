@@ -9,7 +9,7 @@ import streamlit as st
 st.set_page_config(
     page_title="ARC Speech Intelligibility Test",
     layout="centered",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
 
 # =======================
@@ -21,6 +21,50 @@ import subprocess
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+
+
+import sqlite3
+from datetime import datetime
+
+
+def init_db():
+    conn = sqlite3.connect("arc.db")
+    c = conn.cursor()
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS patients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id TEXT UNIQUE,
+            created_at TEXT
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS assessments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient_id TEXT,
+            clinician TEXT,
+            date TEXT,
+            z_score REAL,
+            y_score REAL,
+            arc_score REAL,
+            FOREIGN KEY(patient_id) REFERENCES patients(patient_id)
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()    
+
+# =======================
+# NAVIGATION
+# =======================
+
+page = st.sidebar.radio(
+    "Navigation",
+    ["New Assessment", "Patient History"]
+)
 
 # =======================
 # CONFIG
@@ -105,6 +149,7 @@ html, body, [class*="css"] {
 .stApp {
     background-color: #F7F8FA;
 }
+
 
 /* Header bar */
 .arc-header {
@@ -289,9 +334,19 @@ div.stButton > button:hover { opacity: 0.88; transform: translateY(-1px); }
 
 /* Input label fix */
 label { font-weight: 500 !important; font-size: 14px !important; }
+            
+/* Force headings to use dark text */
+h1, h2, h3, h4, h5, h6 {
+    color: #1A1D23 !important;
+}
+
+/* Fix form labels */
+label, .stTextInput label {
+    color: #1A1D23 !important;
+}            
 
 /* Hide streamlit chrome */
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -426,11 +481,39 @@ def record_error_display():
         st.error(st.session_state.record_error)
         st.session_state.record_error = None
 
+# =======================
+# DATABASE FUNCTIONS
+# =======================
+
+def save_assessment():
+    conn = sqlite3.connect("arc.db")
+    c = conn.cursor()
+
+    c.execute("""
+        INSERT OR IGNORE INTO patients (patient_id, created_at)
+        VALUES (?, ?)
+    """, (st.session_state.patient_id, datetime.now().isoformat()))
+
+    c.execute("""
+        INSERT INTO assessments
+        (patient_id, clinician, date, z_score, y_score, arc_score)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        st.session_state.patient_id,
+        st.session_state.clinician,
+        datetime.now().isoformat(),
+        st.session_state.z_score,
+        st.session_state.y_score,
+        st.session_state.arc_score
+    ))
+
+    conn.commit()
+    conn.close()
 
 # =======================
 # PHASE: PATIENT INFO
 # =======================
-if st.session_state.phase == "patient_info":
+if page == "New Assessment":
     st.markdown("### Start New Assessment")
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
@@ -458,6 +541,56 @@ if st.session_state.phase == "patient_info":
         The clinician records each utterance. An ARC intelligibility score is computed at the end.
     </div>
     """, unsafe_allow_html=True)
+
+# =======================
+# PATIENT HISTORY PAGE
+# =======================
+elif page == "Patient History":
+
+    st.markdown("## Patient History")
+
+    import sqlite3
+    import pandas as pd
+
+    conn = sqlite3.connect("arc.db")
+    c = conn.cursor()
+
+    patient_list = c.execute(
+        "SELECT DISTINCT patient_id FROM assessments"
+    ).fetchall()
+
+    conn.close()
+
+    if not patient_list:
+        st.info("No patient data available yet.")
+    else:
+        patient_ids = [p[0] for p in patient_list]
+        selected_patient = st.selectbox("Select Patient", patient_ids)
+
+        conn = sqlite3.connect("arc.db")
+
+        query = """
+            SELECT date, z_score, y_score, arc_score
+            FROM assessments
+            WHERE patient_id = ?
+            ORDER BY date ASC
+        """
+
+        data = conn.execute(query, (selected_patient,)).fetchall()
+        conn.close()
+
+        if data:
+            df = pd.DataFrame(
+                data,
+                columns=["Date", "Z Score", "Y Score", "ARC Score"]
+            )
+
+            df["Date"] = pd.to_datetime(df["Date"])
+
+            st.dataframe(df)
+
+            st.markdown("### ARC Trend Over Time")
+            st.line_chart(df.set_index("Date")[["ARC Score"]])    
 
 
 # =======================
@@ -647,6 +780,8 @@ elif st.session_state.phase == "result":
                     st.session_state.z_score   = z_score
                     st.session_state.y_score   = y_score
                     st.session_state.arc_score = arc_score
+
+                    save_assessment()
                     st.rerun()
 
                 except subprocess.TimeoutExpired:
