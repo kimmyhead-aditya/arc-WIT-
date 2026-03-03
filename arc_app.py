@@ -442,12 +442,44 @@ def stop_recording_and_save(filename):
         # Clear buffer safely
         st.session_state._local_buffer = []
 
-        return True
+        return rms
 
     except Exception as e:
         st.session_state.record_error = f"Failed to save audio: {e}"
+ 
         return False
+    
 
+from vosk import Model, KaldiRecognizer
+import json
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
+vosk_model = Model(MODEL_PATH)
+
+def transcribe_wav(filepath):
+
+    with sf.SoundFile(filepath) as f:
+        rec = KaldiRecognizer(vosk_model, f.samplerate)
+        rec.SetWords(False)
+
+        transcript = ""
+
+        while True:
+            data = f.read(4000, dtype="int16")
+            
+            if len(data) == 0:
+                break
+            
+            data = data.tobytes()
+            
+            if rec.AcceptWaveform(data):
+                res = json.loads(rec.Result())
+                transcript += " " + res.get("text", "")
+
+        final = json.loads(rec.FinalResult())
+        transcript += " " + final.get("text", "")
+
+    return normalize_text(transcript.strip())
 
 # =======================
 # HELPERS
@@ -461,6 +493,8 @@ def progress_bar(current, total, label=""):
     <div class="arc-progress-label">{label}</div>
     """, unsafe_allow_html=True)
 
+def normalize_text(text):
+    return text.strip().replace("।", "").replace(".", "")
 
 def severity_label(score):
     """Return severity category and colour based on ARC score."""
@@ -511,176 +545,205 @@ def save_assessment():
     conn.close()
 
 # =======================
-# PHASE: PATIENT INFO
+# PAGE: NEW ASSESSMENT
 # =======================
 if page == "New Assessment":
-    st.markdown("### Start New Assessment")
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    with st.form("patient_form"):
-        patient_id  = st.text_input("Patient ID / Name", placeholder="e.g. PT-2025-001")
-        clinician   = st.text_input("Clinician Name", placeholder="e.g. Dr. Sharma")
+    # =======================
+    # PHASE: PATIENT INFO
+    # =======================
+    if st.session_state.phase == "patient_info":
+
+        st.markdown("### Start New Assessment")
         st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-        submitted   = st.form_submit_button("Begin Test →")
 
-    if submitted:
-        if not patient_id.strip():
-            st.error("Please enter a Patient ID before starting.")
+        with st.form("patient_form"):
+            patient_id  = st.text_input("Patient ID / Name", placeholder="e.g. PT-2025-001")
+            clinician   = st.text_input("Clinician Name", placeholder="e.g. Dr. Sharma")
+            st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+            submitted   = st.form_submit_button("Begin Test →")
+
+        if submitted:
+            if not patient_id.strip():
+                st.error("Please enter a Patient ID before starting.")
+            else:
+                st.session_state.patient_id = patient_id.strip()
+                st.session_state.clinician  = clinician.strip()
+                st.session_state.phase      = "warmup"
+                st.session_state.index      = 0
+                st.rerun()
+
+        st.markdown(f"""
+        <div class="arc-info-card" style="margin-top:24px">
+            <strong>Test Overview</strong><br>
+            The patient will read <strong>{len(words)} words</strong> followed by
+            <strong>{len(sentences)} sentences</strong> aloud.
+            The clinician records each utterance. An ARC intelligibility score is computed at the end.
+        </div>
+        """, unsafe_allow_html=True)
+
+
+    # =======================
+    # PHASE: WARMUP
+    # =======================
+    elif st.session_state.phase == "warmup":
+
+        warmup_words = ["एक", "दो"]
+        total = len(warmup_words)
+        idx   = st.session_state.index
+
+        if idx < total:
+
+            progress_bar(idx, total,
+                         f"Warm-up {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
+
+            st.markdown('<div class="arc-phase-label">Warm-up Calibration</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="arc-prompt">{warmup_words[idx]}</div>', unsafe_allow_html=True)
+
+            record_error_display()
+
+            if st.session_state.recording:
+                st.markdown("""
+                <div class="arc-recording">
+                    <div class="arc-dot"></div> Recording…
+                </div>
+                """, unsafe_allow_html=True)
+
+                if st.button("⏹  Stop Recording", key="stop_warmup"):
+                    filename = "warmup_audio.wav"
+                    rms = stop_recording_and_save(filename)
+
+                    if rms:
+
+                        # --- Thresholds ---
+                        MIN_RMS = 0.003
+                        MAX_RMS = 0.5   # clipping protection
+
+                        if rms < MIN_RMS:
+                            st.error("Speech too soft. Please speak louder and retry.")
+                        elif rms > MAX_RMS:
+                            st.error("Audio too loud or distorted. Reduce microphone gain.")
+                        else:
+                            # --- ASR Validation ---
+                            transcript = transcribe_wav(filename)
+                            reference  = warmup_words[idx]
+
+                            transcript = normalize_text(transcript)
+                            reference  = normalize_text(reference)
+
+                            if transcript != reference:
+                                st.error(f"Recognition mismatch. Detected: '{transcript}'. Please retry clearly.")
+                            else:
+                                st.session_state.index += 1
+                                st.rerun()
+
+            else:
+                if st.button("🎤  Record", key="rec_warmup"):
+                    start_recording()
+                    
+
         else:
-            st.session_state.patient_id = patient_id.strip()
-            st.session_state.clinician  = clinician.strip()
-            st.session_state.phase      = "word"
-            st.session_state.index      = 0
+            st.session_state.phase = "word"
+            st.session_state.index = 0
             st.rerun()
 
-    st.markdown("""
-    <div class="arc-info-card" style="margin-top:24px">
-        <strong>Test Overview</strong><br>
-        The patient will read <strong>""" + str(len(words)) + """ words</strong> followed by
-        <strong>""" + str(len(sentences)) + """ sentences</strong> aloud.
-        The clinician records each utterance. An ARC intelligibility score is computed at the end.
-    </div>
-    """, unsafe_allow_html=True)
 
-# =======================
-# PATIENT HISTORY PAGE
-# =======================
-elif page == "Patient History":
+    # =======================
+    # PHASE: WORD
+    # =======================
+    elif st.session_state.phase == "word":
 
-    st.markdown("## Patient History")
+        total = len(words)
+        idx   = st.session_state.index
 
-    import sqlite3
-    import pandas as pd
+        if idx < total:
 
-    conn = sqlite3.connect("arc.db")
-    c = conn.cursor()
+            progress_bar(idx, total,
+                         f"Word {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
-    patient_list = c.execute(
-        "SELECT DISTINCT patient_id FROM assessments"
-    ).fetchall()
+            st.markdown('<div class="arc-phase-label">Word Reading</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="arc-prompt">{words[idx]}</div>', unsafe_allow_html=True)
 
-    conn.close()
+            record_error_display()
 
-    if not patient_list:
-        st.info("No patient data available yet.")
-    else:
-        patient_ids = [p[0] for p in patient_list]
-        selected_patient = st.selectbox("Select Patient", patient_ids)
+            if st.session_state.recording:
+                st.markdown("""
+                <div class="arc-recording">
+                    <div class="arc-dot"></div> Recording…
+                </div>
+                """, unsafe_allow_html=True)
 
-        conn = sqlite3.connect("arc.db")
+                if st.button("⏹  Stop Recording", key="stop_word"):
+                    filename = os.path.join(WORD_AUDIO_DIR, f"utt{idx+1:02d}.wav")
+                    success  = stop_recording_and_save(filename)
+                    if success:
+                        st.session_state.index += 1
+                    st.rerun()
 
-        query = """
-            SELECT date, z_score, y_score, arc_score
-            FROM assessments
-            WHERE patient_id = ?
-            ORDER BY date ASC
-        """
+            else:
+                if st.button("🎤  Record", key="rec_word"):
+                    start_recording()
+                    
 
-        data = conn.execute(query, (selected_patient,)).fetchall()
-        conn.close()
-
-        if data:
-            df = pd.DataFrame(
-                data,
-                columns=["Date", "Z Score", "Y Score", "ARC Score"]
-            )
-
-            df["Date"] = pd.to_datetime(df["Date"])
-
-            st.dataframe(df)
-
-            st.markdown("### ARC Trend Over Time")
-            st.line_chart(df.set_index("Date")[["ARC Score"]])    
-
-
-# =======================
-# PHASE: WORD
-# =======================
-elif st.session_state.phase == "word":
-
-    total = len(words)
-    idx   = st.session_state.index
-
-    if idx < total:
-        progress_bar(idx, total,
-                     f"Word {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
-
-        st.markdown('<div class="arc-phase-label">Word Reading</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="arc-prompt">{words[idx]}</div>', unsafe_allow_html=True)
-
-        record_error_display()
-
-        if st.session_state.recording:
-            st.markdown("""
-            <div class="arc-recording">
-                <div class="arc-dot"></div> Recording…
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("⏹  Stop Recording", key="stop_word"):
-                filename = os.path.join(WORD_AUDIO_DIR, f"utt{idx+1:02d}.wav")
-                success  = stop_recording_and_save(filename)
-                if success:
-                    st.session_state.index += 1  # only advance on success
-                st.rerun()
         else:
-            if st.button("🎤  Record", key="rec_word"):
-                start_recording()
-                st.rerun()
-    else:
-        # All words done — transition
-        st.session_state.phase = "sentence"
-        st.session_state.index = 0
-        st.rerun()
+            st.session_state.phase = "sentence"
+            st.session_state.index = 0
+            st.rerun()
 
 
-# =======================
-# PHASE: SENTENCE
-# =======================
-elif st.session_state.phase == "sentence":
+    # =======================
+    # PHASE: SENTENCE
+    # =======================
+    elif st.session_state.phase == "sentence":
 
-    total = len(sentences)
-    idx   = st.session_state.index
+        total = len(sentences)
+        idx   = st.session_state.index
 
-    if idx < total:
-        row      = sentences[idx]
-        utt_id   = row["utt_id"]
-        sentence = row["reference"]
+        if idx < total:
 
-        progress_bar(idx, total,
-                     f"Sentence {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
+            row      = sentences[idx]
+            utt_id   = row["utt_id"]
+            sentence = row["reference"]
 
-        st.markdown('<div class="arc-phase-label">Sentence Reading</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="arc-sentence-prompt">{sentence}</div>', unsafe_allow_html=True)
+            progress_bar(idx, total,
+                         f"Sentence {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
-        record_error_display()
+            st.markdown('<div class="arc-phase-label">Sentence Reading</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="arc-sentence-prompt">{sentence}</div>', unsafe_allow_html=True)
 
-        if st.session_state.recording:
-            st.markdown("""
-            <div class="arc-recording">
-                <div class="arc-dot"></div> Recording…
-            </div>
-            """, unsafe_allow_html=True)
-            if st.button("⏹  Stop Recording", key="stop_sent"):
-                filename = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
-                success  = stop_recording_and_save(filename)
-                if success:
-                    st.session_state.index += 1  # only advance on success
-                st.rerun()
+            record_error_display()
+
+            if st.session_state.recording:
+                st.markdown("""
+                <div class="arc-recording">
+                    <div class="arc-dot"></div> Recording…
+                </div>
+                """, unsafe_allow_html=True)
+
+                if st.button("⏹  Stop Recording", key="stop_sent"):
+                    filename = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
+                    success  = stop_recording_and_save(filename)
+                    if success:
+                        st.session_state.index += 1
+                    st.rerun()
+
+            else:
+                if st.button("🎤  Record", key="rec_sent"):
+                    start_recording()
+                    
+
         else:
-            if st.button("🎤  Record", key="rec_sent"):
-                start_recording()
-                st.rerun()
-    else:
-        st.session_state.phase = "result"
-        st.rerun()
+            st.session_state.phase = "result"
+            st.session_state.index = 0
+            st.rerun()
 
 
-# =======================
-# PHASE: RESULT
-# =======================
-elif st.session_state.phase == "result":
-
-    st.markdown("### Assessment Complete")
+    # =======================
+    # PHASE: RESULT
+    # =======================
+    elif st.session_state.phase == "result":
+        st.markdown("### Assessment Complete")
+        # keep your entire existing RESULT scoring block here unchanged
     st.markdown(f"""
     <div class="arc-info-card">
         <strong>Patient:</strong> {st.session_state.patient_id} &nbsp;·&nbsp;
