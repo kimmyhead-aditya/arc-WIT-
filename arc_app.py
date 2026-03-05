@@ -587,10 +587,24 @@ if page == "New Assessment":
             if not patient_id.strip():
                 st.error("Please enter a Patient ID before starting.")
             else:
+
+                import shutil
+
+                # Clean old recordings before new test
+                if os.path.exists(WORD_AUDIO_DIR):
+                    shutil.rmtree(WORD_AUDIO_DIR)
+
+                if os.path.exists(SENT_AUDIO_DIR):
+                    shutil.rmtree(SENT_AUDIO_DIR)
+
+                os.makedirs(WORD_AUDIO_DIR, exist_ok=True)
+                os.makedirs(SENT_AUDIO_DIR, exist_ok=True)
+
                 st.session_state.patient_id = patient_id.strip()
                 st.session_state.clinician  = clinician.strip()
                 st.session_state.phase      = "warmup"
                 st.session_state.index      = 0
+
                 st.rerun()
 
         st.markdown(f"""
@@ -790,32 +804,35 @@ if page == "New Assessment":
             score = st.session_state.arc_score
             sev_label, sev_bg, sev_fg = severity_label(score)
 
-            st.markdown(f"""
+            st.markdown(
+            f"""
             <div class="arc-score-card">
 
-                <div class="arc-score-label">ARC Score</div>
-                <div class="arc-score-num">{score:.1f}</div>
+            <div class="arc-score-label">ARC Score</div>
+            <div class="arc-score-num">{score:.1f}</div>
 
-                <div class="arc-severity" style="background:{sev_bg};color:{sev_fg}">
-                    {sev_label}
-                </div>
+            <div class="arc-severity" style="background:{sev_bg};color:{sev_fg}">
+            {sev_label}
+            </div>
 
-                <div class="arc-sub-scores">
+            <div class="arc-sub-scores">
 
-                    <div class="arc-sub">
-                        <div class="arc-sub-num">{st.session_state.z_score:.1f}</div>
-                        <div class="arc-sub-label">Word Score (Z)</div>
-                    </div>
+            <div class="arc-sub">
+            <div class="arc-sub-num">{st.session_state.z_score:.1f}</div>
+            <div class="arc-sub-label">Word Score (Z)</div>
+            </div>
 
-                    <div class="arc-sub">
-                        <div class="arc-sub-num">{st.session_state.y_score:.1f}</div>
-                        <div class="arc-sub-label">Sentence Score (Y)</div>
-                    </div>
-
-                </div>
+            <div class="arc-sub">
+            <div class="arc-sub-num">{st.session_state.y_score:.1f}</div>
+            <div class="arc-sub-label">Sentence Score (Y)</div>
+            </div>
 
             </div>
-            """, unsafe_allow_html=True)
+
+            </div>
+            """,
+            unsafe_allow_html=True
+            )
 
             if st.button("🔄  Start New Assessment"):
 

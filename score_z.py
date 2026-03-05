@@ -6,47 +6,45 @@ import wave
 from vosk import Model, KaldiRecognizer
 from difflib import SequenceMatcher
 
+
+
 def intelligibility_score(ref, hyp):
-    return SequenceMatcher(None, ref, hyp).ratio() * 100
+    ref = ref.strip()
+    hyp = hyp.strip()
+
+    if ref == hyp:
+        return 100.0
+    else:
+        return 0.0
 
 # ---------------- CONFIG ----------------
-import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 MODEL_PATH = os.path.join(BASE_DIR, "model")
-AUDIO_DIR = "audio_16k"
-REFERENCsE_FILE = "references.csv"
-OUTPUT_FILE = "z_results.csv"
-SAMPLE_RATE = 16000
+AUDIO_DIR = os.path.join(BASE_DIR, "audio_16k")
 
-WORDLIST = [
-    "कलम", "पानी", "बच्चा", "घर", "किताब",
-    "दूध", "फल", "नमक", "सड़क", "मछली",
-    "टोपी", "कमरा", "जूता", "लड़का", "चावल"
-]
-
-GRAMMAR = json.dumps(WORDLIST, ensure_ascii=False)
-# ----------------------------------------
-
-
-# ---------------- CONFIG ----------------
-import os
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "model")
-AUDIO_DIR = "audio_16k"
 REFERENCE_FILE = "references.csv"
+WORD_FILE = "words_test.txt"
 OUTPUT_FILE = "z_results.csv"
+
 SAMPLE_RATE = 16000
 
+# load word list from master stimulus file
+with open(WORD_FILE, encoding="utf-8") as f:
+    WORDLIST = [w.strip() for w in f if w.strip()]
 
-
+# build constrained grammar for Vosk
+GRAMMAR = json.dumps(WORDLIST + ["[unk]"], ensure_ascii=False)
 
 # ----------------------------------------
 
 model = Model(MODEL_PATH)
 
 def decode_word(wav_path):
+    if not os.path.exists(wav_path):
+        return "", 0.0
+
     wf = wave.open(wav_path, "rb")
 
     assert wf.getnchannels() == 1
@@ -64,6 +62,7 @@ def decode_word(wav_path):
     result = json.loads(rec.FinalResult())
 
     text = result.get("text", "").strip()
+    text = text.split()[0] if text else ""
 
     confidence = 0.0
     if "confidence" in result:
@@ -93,18 +92,16 @@ with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
         wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
         hypothesis, confidence = decode_word(wav_path)
 
+        score = intelligibility_score(reference, hypothesis)
+
         if hypothesis == "":
             error_type = "deletion"
-            z = 0
+        elif score == 100:
+            error_type = "correct"
         else:
-            score = intelligibility_score(reference, hypothesis)
+            error_type = "substitution"
 
-            if score > 90:
-                error_type = "correct"
-            else:
-                error_type = "substitution"
-
-            z = round(score, 2)
+        z = score
 
         writer.writerow({
             "utt_id": utt_id,
