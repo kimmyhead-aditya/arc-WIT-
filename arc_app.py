@@ -140,7 +140,7 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Sans:wght@300;400;500;600&display=swap');
 
-html, body, [class*="css"] {
+html, body {
     background-color: #F7F8FA;
     color: #1A1D23;
     font-family: 'DM Sans', sans-serif;
@@ -377,6 +377,17 @@ if sent_err:
 # RECORDING FUNCTIONS
 # =======================
 def start_recording():
+
+    # close any previous stream safely
+    old_stream = st.session_state.get("stream", None)
+
+    if old_stream is not None:
+        try:
+            old_stream.stop()
+            old_stream.close()
+        except:
+            pass
+
     st.session_state.record_error = None
 
     local_buffer = []
@@ -392,13 +403,13 @@ def start_recording():
             channels=1,
             dtype="float32",
             callback=callback,
-            device=None,
         )
+
         stream.start()
 
         st.session_state.stream = stream
         st.session_state._local_buffer = local_buffer
-        st.session_state.recording = True  # move here
+        st.session_state.recording = True
 
     except Exception as e:
         st.session_state.record_error = f"Could not open microphone: {e}"
@@ -406,18 +417,22 @@ def start_recording():
 
 
 def stop_recording_and_save(filename):
-    """Stop recording, validate buffer, and write WAV. Returns True on success."""
+
+    stream = st.session_state.get("stream", None)
+
     try:
-        if st.session_state.stream:
-            st.session_state.stream.stop()
-            st.session_state.stream.close()
+        if stream is not None:
+            stream.stop()
+            stream.close()
             st.session_state.stream = None
     except Exception as e:
-        st.session_state.record_error = f"Error closing stream: {e}"
+        st.session_state.record_error = f"Error stopping stream: {e}"
+        return False
 
     st.session_state.recording = False
 
     try:
+        # safely read buffer
         local_buffer = st.session_state.get("_local_buffer", [])
 
         if not local_buffer:
@@ -426,27 +441,28 @@ def stop_recording_and_save(filename):
 
         audio = np.concatenate(local_buffer, axis=0)
 
-        # Enforce max duration
+        # enforce max duration
         max_samples = SAMPLE_RATE * MAX_DURATION_S
         if len(audio) > max_samples:
             audio = audio[:max_samples]
 
-        # Check for silence
+        # compute RMS
         rms = np.sqrt(np.mean(audio**2))
+
         if rms < 0.001:
-            st.session_state.record_error = "Recording appears silent. Please check microphone and try again."
+            st.session_state.record_error = "Recording appears silent."
             return False
 
+        # save wav
         sf.write(filename, audio, SAMPLE_RATE, subtype="PCM_16")
 
-        # Clear buffer safely
+        # clear buffer after save
         st.session_state._local_buffer = []
 
         return rms
 
     except Exception as e:
         st.session_state.record_error = f"Failed to save audio: {e}"
- 
         return False
     
 
@@ -454,7 +470,11 @@ from vosk import Model, KaldiRecognizer
 import json
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
-vosk_model = Model(MODEL_PATH)
+@st.cache_resource
+def load_model():
+    return Model(MODEL_PATH)
+
+vosk_model = load_model()
 
 def transcribe_wav(filepath):
 
@@ -595,7 +615,7 @@ if page == "New Assessment":
         if idx < total:
 
             progress_bar(idx, total,
-                         f"Warm-up {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
+                        f"Warm-up {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
             st.markdown('<div class="arc-phase-label">Warm-up Calibration</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="arc-prompt">{warmup_words[idx]}</div>', unsafe_allow_html=True)
@@ -609,38 +629,34 @@ if page == "New Assessment":
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button("⏹  Stop Recording", key="stop_warmup"):
+            spacer, col1, col2, spacer2 = st.columns([2,1,1,2])
+
+            with col1:
+                if st.button("🎤 Record", disabled=st.session_state.recording):
+                    start_recording()
+                    st.rerun()
+
+            with col2:
+                if st.button("⏹ Stop", disabled=not st.session_state.recording):
+
                     filename = "warmup_audio.wav"
                     rms = stop_recording_and_save(filename)
 
                     if rms:
 
-                        # --- Thresholds ---
                         MIN_RMS = 0.003
-                        MAX_RMS = 0.5   # clipping protection
+                        MAX_RMS = 0.5
 
                         if rms < MIN_RMS:
                             st.error("Speech too soft. Please speak louder and retry.")
+
                         elif rms > MAX_RMS:
                             st.error("Audio too loud or distorted. Reduce microphone gain.")
+
                         else:
-                            # --- ASR Validation ---
-                            transcript = transcribe_wav(filename)
-                            reference  = warmup_words[idx]
-
-                            transcript = normalize_text(transcript)
-                            reference  = normalize_text(reference)
-
-                            if transcript != reference:
-                                st.error(f"Recognition mismatch. Detected: '{transcript}'. Please retry clearly.")
-                            else:
-                                st.session_state.index += 1
-                                st.rerun()
-
-            else:
-                if st.button("🎤  Record", key="rec_warmup"):
-                    start_recording()
-                    
+                            st.success("Microphone calibration successful.")
+                            st.session_state.index += 1
+                            st.rerun()
 
         else:
             st.session_state.phase = "word"
@@ -659,7 +675,7 @@ if page == "New Assessment":
         if idx < total:
 
             progress_bar(idx, total,
-                         f"Word {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
+                        f"Word {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
             st.markdown('<div class="arc-phase-label">Word Reading</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="arc-prompt">{words[idx]}</div>', unsafe_allow_html=True)
@@ -673,17 +689,24 @@ if page == "New Assessment":
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button("⏹  Stop Recording", key="stop_word"):
-                    filename = os.path.join(WORD_AUDIO_DIR, f"utt{idx+1:02d}.wav")
-                    success  = stop_recording_and_save(filename)
-                    if success:
-                        st.session_state.index += 1
+            spacer, col1, col2, spacer2 = st.columns([2,1,1,2])
+
+            with col1:
+                if st.button("🎤 Record", disabled=st.session_state.recording):
+                    start_recording()
                     st.rerun()
 
-            else:
-                if st.button("🎤  Record", key="rec_word"):
-                    start_recording()
-                    
+            with col2:
+                if st.button("⏹ Stop", disabled=not st.session_state.recording):
+
+            
+
+                    filename = os.path.join(WORD_AUDIO_DIR, f"utt{idx+1:02d}.wav")
+                    success = stop_recording_and_save(filename)
+
+                    if success:
+                        st.session_state.index += 1
+                        st.rerun()
 
         else:
             st.session_state.phase = "sentence"
@@ -706,7 +729,7 @@ if page == "New Assessment":
             sentence = row["reference"]
 
             progress_bar(idx, total,
-                         f"Sentence {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
+                        f"Sentence {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
             st.markdown('<div class="arc-phase-label">Sentence Reading</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="arc-sentence-prompt">{sentence}</div>', unsafe_allow_html=True)
@@ -720,17 +743,22 @@ if page == "New Assessment":
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button("⏹  Stop Recording", key="stop_sent"):
-                    filename = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
-                    success  = stop_recording_and_save(filename)
-                    if success:
-                        st.session_state.index += 1
+            spacer, col1, col2, spacer2 = st.columns([2,1,1,2])
+
+            with col1:
+                if st.button("🎤 Record", disabled=st.session_state.recording):
+                    start_recording()
                     st.rerun()
 
-            else:
-                if st.button("🎤  Record", key="rec_sent"):
-                    start_recording()
-                    
+            with col2:
+                if st.button("⏹ Stop", disabled=not st.session_state.recording):
+
+                    filename = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
+                    success = stop_recording_and_save(filename)
+
+                    if success:
+                        st.session_state.index += 1
+                        st.rerun()
 
         else:
             st.session_state.phase = "result"
@@ -742,114 +770,225 @@ if page == "New Assessment":
     # PHASE: RESULT
     # =======================
     elif st.session_state.phase == "result":
+
         st.markdown("### Assessment Complete")
-        # keep your entire existing RESULT scoring block here unchanged
-    st.markdown(f"""
-    <div class="arc-info-card">
-        <strong>Patient:</strong> {st.session_state.patient_id} &nbsp;·&nbsp;
-        <strong>Clinician:</strong> {st.session_state.clinician or '—'}
-    </div>
-    """, unsafe_allow_html=True)
 
-    record_error_display()
-
-    # Show cached score if already computed
-    if st.session_state.arc_score is not None:
-        score = st.session_state.arc_score
-        sev_label, sev_bg, sev_fg = severity_label(score)
         st.markdown(f"""
-        <div class="arc-score-card">
-            <div class="arc-score-label">ARC Score</div>
-            <div class="arc-score-num">{score:.1f}</div>
-            <div class="arc-severity" style="background:{sev_bg};color:{sev_fg}">
-                {sev_label}
-            </div>
-            <div class="arc-sub-scores">
-                <div class="arc-sub">
-                    <div class="arc-sub-num">{st.session_state.z_score:.1f}</div>
-                    <div class="arc-sub-label">Word Score (Z)</div>
-                </div>
-                <div class="arc-sub">
-                    <div class="arc-sub-num">{st.session_state.y_score:.1f}</div>
-                    <div class="arc-sub-label">Sentence Score (Y)</div>
-                </div>
-            </div>
+        <div class="arc-info-card">
+            <strong>Patient:</strong> {st.session_state.patient_id} &nbsp;·&nbsp;
+            <strong>Clinician:</strong> {st.session_state.clinician or '—'}
         </div>
         """, unsafe_allow_html=True)
 
-        if st.button("🔄  Start New Assessment"):
-            for k, v in DEFAULTS.items():
-                st.session_state[k] = v
-            st.rerun()
+        record_error_display()
 
-    else:
-        if st.button("📊  Compute ARC Score"):
-            with st.spinner("Scoring recordings…"):
+        # =======================
+        # SHOW RESULT IF ALREADY COMPUTED
+        # =======================
+        if st.session_state.arc_score is not None:
+
+            score = st.session_state.arc_score
+            sev_label, sev_bg, sev_fg = severity_label(score)
+
+            st.markdown(f"""
+            <div class="arc-score-card">
+
+                <div class="arc-score-label">ARC Score</div>
+                <div class="arc-score-num">{score:.1f}</div>
+
+                <div class="arc-severity" style="background:{sev_bg};color:{sev_fg}">
+                    {sev_label}
+                </div>
+
+                <div class="arc-sub-scores">
+
+                    <div class="arc-sub">
+                        <div class="arc-sub-num">{st.session_state.z_score:.1f}</div>
+                        <div class="arc-sub-label">Word Score (Z)</div>
+                    </div>
+
+                    <div class="arc-sub">
+                        <div class="arc-sub-num">{st.session_state.y_score:.1f}</div>
+                        <div class="arc-sub-label">Sentence Score (Y)</div>
+                    </div>
+
+                </div>
+
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("🔄  Start New Assessment"):
+
+                for k, v in DEFAULTS.items():
+                    st.session_state[k] = v
+
+                st.rerun()
+
+        # =======================
+        # COMPUTE ARC SCORE
+        # =======================
+        else:
+
+            if st.button("📊  Compute ARC Score"):
+
+                progress = st.progress(0)
+                status = st.empty()
+
                 try:
-                    # Clean up old results
+
+                    # -----------------------
+                    # STEP 1: cleanup
+                    # -----------------------
+                    status.text("Preparing scoring environment...")
+                    progress.progress(10)
+
                     for f in ("z_results.csv", "y_results.csv"):
                         if os.path.exists(f):
                             os.remove(f)
 
-                    # Run scoring scripts
+                    # -----------------------
+                    # STEP 2: word scoring
+                    # -----------------------
+                    status.text("Scoring word recordings (Z score)...")
+                    progress.progress(30)
+
                     z_result = subprocess.run(
                         [sys.executable, "score_z.py"],
-                        capture_output=True, text=True, timeout=120
-                    )
-                    y_result = subprocess.run(
-                        [sys.executable, "score_y.py"],
-                        capture_output=True, text=True, timeout=120
+                        capture_output=True,
+                        text=True,
+                        timeout=120
                     )
 
-                    # Check for script errors
                     if z_result.returncode != 0:
                         st.error(f"Word scoring failed:\n{z_result.stderr}")
                         st.stop()
+
+                    # -----------------------
+                    # STEP 3: sentence scoring
+                    # -----------------------
+                    status.text("Scoring sentence recordings (Y score)...")
+                    progress.progress(55)
+
+                    y_result = subprocess.run(
+                        [sys.executable, "score_y.py"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+
                     if y_result.returncode != 0:
                         st.error(f"Sentence scoring failed:\n{y_result.stderr}")
                         st.stop()
 
-                    # Validate result files exist
-                    if not os.path.exists("z_results.csv"):
-                        st.error("score_z.py ran but did not produce z_results.csv")
-                        st.stop()
-                    if not os.path.exists("y_results.csv"):
-                        st.error("score_y.py ran but did not produce y_results.csv")
-                        st.stop()
+                    # -----------------------
+                    # STEP 4: load results
+                    # -----------------------
+                    status.text("Loading scoring results...")
+                    progress.progress(75)
 
                     import pandas as pd
+
+                    if not os.path.exists("z_results.csv"):
+                        st.error("score_z.py did not produce z_results.csv")
+                        st.stop()
+
+                    if not os.path.exists("y_results.csv"):
+                        st.error("score_y.py did not produce y_results.csv")
+                        st.stop()
+
                     z_df = pd.read_csv("z_results.csv")
                     y_df = pd.read_csv("y_results.csv")
 
                     if "z" not in z_df.columns:
                         st.error("z_results.csv must contain a 'z' column.")
                         st.stop()
+
                     if "y" not in y_df.columns:
                         st.error("y_results.csv must contain a 'y' column.")
                         st.stop()
 
-                    z_score   = float(z_df["z"].mean())
-                    y_score   = float(y_df["y"].mean())
+                    # -----------------------
+                    # STEP 5: compute ARC
+                    # -----------------------
+                    status.text("Computing ARC score...")
+                    progress.progress(90)
+
+                    z_score = float(z_df["z"].mean())
+                    y_score = float(y_df["y"].mean())
                     arc_score = (z_score + y_score) / 2
 
-                    # Range validation
                     for name, val in [("Z", z_score), ("Y", y_score), ("ARC", arc_score)]:
                         if not (0 <= val <= 100):
                             st.warning(
-                                f"{name} score ({val:.2f}) is outside the expected 0–100 range. "
-                                "Check scoring scripts."
+                                f"{name} score ({val:.2f}) is outside the expected 0–100 range."
                             )
 
-                    st.session_state.z_score   = z_score
-                    st.session_state.y_score   = y_score
+                    st.session_state.z_score = z_score
+                    st.session_state.y_score = y_score
                     st.session_state.arc_score = arc_score
 
+                    # -----------------------
+                    # STEP 6: save result
+                    # -----------------------
+                    status.text("Saving assessment...")
+                    progress.progress(100)
+
                     save_assessment()
+
+                    status.text("Scoring complete ✓")
+
                     st.rerun()
 
                 except subprocess.TimeoutExpired:
-                    st.error("Scoring timed out. The audio files may be too large or the scoring scripts are hanging.")
+                    st.error("Scoring timed out.")
+
                 except FileNotFoundError as e:
                     st.error(f"Scoring script not found: {e}")
+
                 except Exception as e:
                     st.error(f"Unexpected error during scoring: {e}")
+# =======================
+# PAGE: PATIENT HISTORY
+# =======================
+elif page == "Patient History":
+
+    st.markdown("### Patient History")
+
+    conn = sqlite3.connect("arc.db")
+    c = conn.cursor()
+
+    try:
+
+        query = """
+        SELECT
+            a.patient_id,
+            a.clinician,
+            a.date,
+            a.z_score,
+            a.y_score,
+            a.arc_score
+        FROM assessments a
+        ORDER BY a.date DESC
+        """
+
+        import pandas as pd
+        df = pd.read_sql_query(query, conn)
+
+        if df.empty:
+            st.info("No assessments recorded yet.")
+            st.stop()
+
+        # Format date
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d %H:%M")
+
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    except Exception as e:
+        st.error(f"Failed to load patient history: {e}")
+
+    finally:
+        conn.close()    

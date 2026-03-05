@@ -1,30 +1,21 @@
-﻿# Streamlit
-.streamlit/
-
-# Virtual environment
-venv/
-
-# OS
-.DS_Store
-
-# Python cache
+﻿# python
 __pycache__/
 *.pyc
 
-# Audio folders
-audio_raw/
+# database
+arc.db
+
+# recordings
 audio_16k/
 audio_sent/
 
-# Any wav files anywhere
-*.wav
-
-# Database
-arc.db
-
-# Scoring outputs
+# results
 z_results.csv
 y_results.csv
 
-# Large model files
+# vosk model
 model/
+
+# virtual env
+venv/
+.venv/
