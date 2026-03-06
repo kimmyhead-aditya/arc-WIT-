@@ -21,10 +21,12 @@ import subprocess
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+import streamlit.components.v1 as components
 
 
 import sqlite3
 from datetime import datetime
+
 
 
 def init_db():
@@ -199,7 +201,7 @@ html, body {
 /* Prompt display */
 .arc-prompt {
     font-family: 'DM Serif Display', serif;
-    font-size: clamp(52px, 10vw, 100px);
+    font-size: clamp(40px, 7vw, 72px);
     text-align: center;
     line-height: 1.1;
     color: #1A1D23;
@@ -208,7 +210,7 @@ html, body {
 }
 .arc-sentence-prompt {
     font-family: 'DM Serif Display', serif;
-    font-size: clamp(28px, 5vw, 52px);
+    font-size: clamp(24px, 4vw, 44px);
     text-align: center;
     line-height: 1.3;
     color: #1A1D23;
@@ -254,14 +256,45 @@ div.stButton > button {
     font-family: 'DM Sans', sans-serif;
     font-size: 16px;
     font-weight: 600;
-    padding: 14px 40px;
-    border-radius: 10px;
+    padding: 16px 28px;
+    border-radius: 14px;
     border: none;
     cursor: pointer;
     transition: all 0.15s;
+
     width: 100%;
+    min-width: 140px;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+
+    white-space: nowrap;
 }
-div.stButton > button:hover { opacity: 0.88; transform: translateY(-1px); }
+
+/* Record */
+button:has(span:contains("🎤")) {
+    background-color: #10B981;
+    color: white;
+}
+
+/* Stop */
+button:has(span:contains("⏹")) {
+    background-color: #EF4444;
+    color: white;
+}
+
+/* Play */
+button:has(span:contains("🔊")) {
+    background-color: #2563EB;
+    color: white;
+}
+
+div.stButton > button:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
 
 /* Score card */
 .arc-score-card {
@@ -339,7 +372,18 @@ label { font-weight: 500 !important; font-size: 14px !important; }
 h1, h2, h3, h4, h5, h6 {
     color: #1A1D23 !important;
 }
+/* Fix markdown text visibility */
+.stMarkdown p {
+    color: #1A1D23 !important;
+}
 
+.stMarkdown li {
+    color: #1A1D23 !important;
+}
+
+.stMarkdown span {
+    color: inherit !important;
+}
 /* Fix form labels */
 label, .stTextInput label {
     color: #1A1D23 !important;
@@ -347,8 +391,20 @@ label, .stTextInput label {
 
 /* Hide streamlit chrome */
 #MainMenu, footer { visibility: hidden; }
+
+/* Instruction caption styling */
+div[data-testid="stCaptionContainer"] {
+    text-align: center;
+    font-size: 13px;
+    color: #6B7280;
+    margin-top: -10px;
+    margin-bottom: 28px;
+}
+
+                                    
 </style>
 """, unsafe_allow_html=True)
+
 
 
 # =======================
@@ -360,6 +416,36 @@ st.markdown("""
     <div class="arc-badge">Intelligibility Test</div>
 </div>
 """, unsafe_allow_html=True)
+
+components.html(
+"""
+<script>
+
+document.addEventListener('keydown', function(e) {
+
+if (e.target.tagName === "INPUT") return;
+
+    if (e.key === 'r' || e.key === 'R') {
+        window.parent.document.querySelectorAll('button')
+        .forEach(btn => { if(btn.innerText.includes("Record")) btn.click() })
+    }
+
+    if (e.key === 's' || e.key === 'S') {
+        window.parent.document.querySelectorAll('button')
+        .forEach(btn => { if(btn.innerText.includes("Stop")) btn.click() })
+    }
+
+    if (e.key === 'p' || e.key === 'P') {
+        window.parent.document.querySelectorAll('button')
+        .forEach(btn => { if(btn.innerText.includes("Play")) btn.click() })
+    }
+
+});
+
+</script>
+""",
+height=0
+)
 
 
 # =======================
@@ -464,7 +550,16 @@ def stop_recording_and_save(filename):
     except Exception as e:
         st.session_state.record_error = f"Failed to save audio: {e}"
         return False
-    
+
+def play_prompt(filepath):
+
+    try:
+        audio, sr = sf.read(filepath)
+        sd.play(audio, sr)
+        sd.wait()
+
+    except Exception as e:
+        st.warning(f"Playback failed: {e}")    
 
 from vosk import Model, KaldiRecognizer
 import json
@@ -692,7 +787,11 @@ if page == "New Assessment":
                         f"Word {idx + 1} of {total}  ·  Patient: {st.session_state.patient_id}")
 
             st.markdown('<div class="arc-phase-label">Word Reading</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="arc-prompt">{words[idx]}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="arc-sentence-prompt">{words[idx]}</div>', unsafe_allow_html=True)
+            
+            st.caption(
+            "For standardised testing please avoid playing the prompt more than twice unless the patient did not hear it clearly."
+            )
 
             record_error_display()
 
@@ -703,7 +802,7 @@ if page == "New Assessment":
                 </div>
                 """, unsafe_allow_html=True)
 
-            spacer, col1, col2, spacer2 = st.columns([2,1,1,2])
+            spacer, col1, col2, col3, spacer2 = st.columns([1.2,1.2,1.2,1.2,1.2])
 
             with col1:
                 if st.button("🎤 Record", disabled=st.session_state.recording):
@@ -713,14 +812,23 @@ if page == "New Assessment":
             with col2:
                 if st.button("⏹ Stop", disabled=not st.session_state.recording):
 
-            
-
                     filename = os.path.join(WORD_AUDIO_DIR, f"utt{idx+1:02d}.wav")
                     success = stop_recording_and_save(filename)
 
                     if success:
                         st.session_state.index += 1
                         st.rerun()
+
+            with col3:
+
+                prompt_file = f"audio_prompts_wav/utt{idx+1:02d}.wav"
+
+                if st.button("🔊 Play", disabled=st.session_state.recording):
+
+                    if os.path.exists(prompt_file):
+                        play_prompt(prompt_file)
+                    else:
+                        st.warning("Prompt audio missing.")
 
         else:
             st.session_state.phase = "sentence"
@@ -757,7 +865,7 @@ if page == "New Assessment":
                 </div>
                 """, unsafe_allow_html=True)
 
-            spacer, col1, col2, spacer2 = st.columns([2,1,1,2])
+            spacer, col1, col2, col3, spacer2 = st.columns([1.2,1.2,1.2,1.2,1.2])
 
             with col1:
                 if st.button("🎤 Record", disabled=st.session_state.recording):
@@ -773,6 +881,17 @@ if page == "New Assessment":
                     if success:
                         st.session_state.index += 1
                         st.rerun()
+
+            with col3:
+
+                prompt_file = f"audio_prompts_sent/{utt_id}.wav"
+
+                if st.button("🔊 Play", disabled=st.session_state.recording):
+
+                    if os.path.exists(prompt_file):
+                        play_prompt(prompt_file)
+                    else:
+                        st.warning("Sentence prompt audio missing.")            
 
         else:
             st.session_state.phase = "result"
@@ -834,6 +953,57 @@ if page == "New Assessment":
             unsafe_allow_html=True
             )
 
+            # ==========================
+            # WITHIN SESSION CONSISTENCY
+            # ==========================
+
+            import pandas as pd
+
+            try:
+                z_df = pd.read_csv("z_results.csv")
+
+                st.markdown("### Within-Session Consistency Check")
+
+                repeat_words = (
+                    z_df.groupby("reference")
+                    .filter(lambda x: len(x) > 1)
+                )
+
+                if not repeat_words.empty:
+
+                    grouped = repeat_words.groupby("reference")
+
+                    for word, group in grouped:
+
+                        scores = group["z"].tolist()
+                        mean_score = round(sum(scores) / len(scores), 1)
+
+                        st.markdown(f"**{word} (Mean: {mean_score}%)**")
+
+                        for i, score in enumerate(scores, start=1):
+
+                            if score >= 80:
+                                color = "green"
+                            elif score >= 50:
+                                color = "orange"
+                            else:
+                                color = "red"
+
+                            st.markdown(
+                                f"- Attempt {i} — <span style='color:{color}'>{score:.0f}%</span>",
+                                unsafe_allow_html=True
+                            )
+
+                        st.markdown("")
+
+                else:
+                    st.info("No repeated words found in this test.")
+
+            except Exception as e:
+                st.warning("Consistency analysis unavailable.")
+
+            # ==========================
+
             if st.button("🔄  Start New Assessment"):
 
                 for k, v in DEFAULTS.items():
@@ -841,6 +1011,8 @@ if page == "New Assessment":
 
                 st.rerun()
 
+
+        
         # =======================
         # COMPUTE ARC SCORE
         # =======================
@@ -915,6 +1087,12 @@ if page == "New Assessment":
 
                     z_df = pd.read_csv("z_results.csv")
                     y_df = pd.read_csv("y_results.csv")
+
+                    # detect repeated words
+                    repeat_words = (
+                        z_df.groupby("reference")
+                        .filter(lambda x: len(x) > 1)
+                    )
 
                     if "z" not in z_df.columns:
                         st.error("z_results.csv must contain a 'z' column.")
