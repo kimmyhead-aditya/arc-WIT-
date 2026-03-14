@@ -16,7 +16,7 @@ def decode_free(wav_path):
     wf = wave.open(wav_path, "rb")
     rec = KaldiRecognizer(model, SAMPLE_RATE)
     while True:
-        data = wf.readframes(4000)
+        data = wf.readframes(8000)
         if len(data) == 0:
             break
         rec.AcceptWaveform(data)

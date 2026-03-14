@@ -15,19 +15,20 @@ REFERENCE_FILE = "sentences.csv"
 OUTPUT_FILE = "y_results.csv"
 SAMPLE_RATE = 16000
 
-model = Model(MODEL_PATH)
+
 
 def sentence_score(ref, hyp):
     return SequenceMatcher(None, ref, hyp).ratio() * 100
 
-def decode_sentence(wav_path):
+def decode_sentence(wav_path,model):
     wf = wave.open(wav_path, "rb")
     rec = KaldiRecognizer(model, SAMPLE_RATE)
-
+    rec.SetWords(True)
+    
     text = ""
 
     while True:
-        data = wf.readframes(4000)
+        data = wf.readframes(8000)
         if len(data) == 0:
             break
         if rec.AcceptWaveform(data):
@@ -39,39 +40,40 @@ def decode_sentence(wav_path):
 
     return text.strip()
 
-with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
-     open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out_f:
+if __name__ == "__main__":
+    with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
+        open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out_f:
 
-    reader = csv.DictReader(ref_f)
-    writer = csv.DictWriter(
-        out_f,
-        fieldnames=["utt_id", "reference", "hypothesis", "y"]
-    )
-    writer.writeheader()
+        reader = csv.DictReader(ref_f)
+        writer = csv.DictWriter(
+            out_f,
+            fieldnames=["utt_id", "reference", "hypothesis", "y"]
+        )
+        writer.writeheader()
 
-    y_values = []
+        y_values = []
 
-    for row in reader:
-        utt_id = row["utt_id"]
-        reference = row["reference"]
+        for row in reader:
+            utt_id = row["utt_id"]
+            reference = row["reference"]
 
-        wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
-        hypothesis = decode_sentence(wav_path)
+            wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
+            hypothesis = decode_sentence(wav_path,model)
 
-        score = round(sentence_score(reference, hypothesis), 2)
-        y_values.append(score)
+            score = round(sentence_score(reference, hypothesis), 2)
+            y_values.append(score)
 
-        writer.writerow({
-            "utt_id": utt_id,
-            "reference": reference,
-            "hypothesis": hypothesis,
-            "y": score
-        })
+            writer.writerow({
+                "utt_id": utt_id,
+                "reference": reference,
+                "hypothesis": hypothesis,
+                "y": score
+            })
 
-session_y = sum(y_values) / len(y_values)
+    session_y = sum(y_values) / len(y_values)
 
-print("\n===== SENTENCE SESSION RESULT =====")
-print(f"Sentences tested : {len(y_values)}")
-print(f"Session Y score  : {session_y:.2f}")
-print("===================================")
+    print("\n===== SENTENCE SESSION RESULT =====")
+    print(f"Sentences tested : {len(y_values)}")
+    print(f"Session Y score  : {session_y:.2f}")
+    print("===================================")
 

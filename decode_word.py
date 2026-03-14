@@ -25,7 +25,7 @@ rec.SetWords(True)
 
 # Decode
 while True:
-    data = wf.readframes(4000)
+    data = wf.readframes(8000)
     if len(data) == 0:
         break
     rec.AcceptWaveform(data)

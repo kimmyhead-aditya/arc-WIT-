@@ -5,17 +5,12 @@ import json
 import wave
 from vosk import Model, KaldiRecognizer
 from difflib import SequenceMatcher
+from per_score import compute_per
+from dtw_score import compute_dtw
 
 
 
-def intelligibility_score(ref, hyp):
-    ref = ref.strip()
-    hyp = hyp.strip()
 
-    if ref == hyp:
-        return 100.0
-    else:
-        return 0.0
 
 # ---------------- CONFIG ----------------
 
@@ -35,11 +30,10 @@ with open(WORD_FILE, encoding="utf-8") as f:
     WORDLIST = [w.strip() for w in f if w.strip()]
 
 # build constrained grammar for Vosk
-GRAMMAR = json.dumps(WORDLIST + ["[unk]"], ensure_ascii=False)
+GRAMMAR = json.dumps([[w] for w in WORDLIST] + [["[unk]"]], ensure_ascii=False)
 
 # ----------------------------------------
 
-model = Model(MODEL_PATH)
 
 def decode_word(wav_path):
     if not os.path.exists(wav_path):
@@ -52,9 +46,9 @@ def decode_word(wav_path):
     assert wf.getframerate() == SAMPLE_RATE
 
     rec = KaldiRecognizer(model, SAMPLE_RATE, GRAMMAR)
-
+    rec.SetWords(True)
     while True:
-        data = wf.readframes(4000)
+        data = wf.readframes(8000)
         if len(data) == 0:
             break
         rec.AcceptWaveform(data)
@@ -74,60 +68,66 @@ def decode_word(wav_path):
     return text, confidence
 
 
+if __name__ == "__main__":
+    with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
+        open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out_f:
 
-with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \
-     open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as out_f:
+        reader = csv.DictReader(ref_f)
+        writer = csv.DictWriter(
+            out_f,
+            fieldnames=["utt_id","reference","hypothesis","error_type","z","per","dtw"]
+        )
+        writer.writeheader()
 
-    reader = csv.DictReader(ref_f)
-    writer = csv.DictWriter(
-        out_f,
-        fieldnames=["utt_id", "reference", "hypothesis", "error_type", "z"]
-    )
-    writer.writeheader()
+        for row in reader:
+            utt_id = row["utt_id"]
+            reference = row["reference"]
 
-    for row in reader:
-        utt_id = row["utt_id"]
-        reference = row["reference"]
+            wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
+            hypothesis, confidence = decode_word(wav_path)
 
-        wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
-        hypothesis, confidence = decode_word(wav_path)
+            # confidence-based intelligibility
+            z = max(0, min(100, confidence * 100))
 
-        score = intelligibility_score(reference, hypothesis)
+            per_score = compute_per(reference, hypothesis)
 
-        if hypothesis == "":
-            error_type = "deletion"
-        elif score == 100:
-            error_type = "correct"
-        else:
-            error_type = "substitution"
+            ref_audio = os.path.join("audio_prompts_wav", f"{utt_id}.wav")
+            dtw_score = compute_dtw(ref_audio, wav_path)
 
-        z = score
+            if hypothesis == "":
+                error_type = "deletion"
+            elif hypothesis == reference:
+                error_type = "correct"
+            else:
+                error_type = "substitution"
 
-        writer.writerow({
-            "utt_id": utt_id,
-            "reference": reference,
-            "hypothesis": hypothesis,
-            "error_type": error_type,
-            "z": z
-        })
- 
-                       
-           
+            writer.writerow({
+                "utt_id": utt_id,
+                "reference": reference,
+                "hypothesis": hypothesis,
+                "error_type": error_type,
+                "z": z,
+                "per": per_score,
+                "dtw": dtw_score
+            })
+    
+                        
             
+                
+                
             
-        
-# -------- SESSION Z AGGREGATION --------
+    # -------- SESSION Z AGGREGATION --------
 
-z_values = []
+    z_values = []
 
-with open(OUTPUT_FILE, newline="", encoding="utf-8") as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        z_values.append(float(row["z"]))
+    with open(OUTPUT_FILE, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            z_values.append(float(row["z"]))
 
-session_z = sum(z_values) / len(z_values)
+    session_z = sum(z_values) / len(z_values)
 
-print("\n===== SESSION RESULT =====")
-print(f"Words tested     : {len(z_values)}")
-print(f"Session Z score  : {session_z:.2f}")
-print("==========================")
+    print("\n===== SESSION RESULT =====")
+    print(f"Words tested     : {len(z_values)}")
+    print(f"Session Z score  : {session_z:.2f}")
+    print("==========================")

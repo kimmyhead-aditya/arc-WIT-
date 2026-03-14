@@ -21,7 +21,10 @@ import subprocess
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
+from score_z import decode_word
+from score_y import decode_sentence
 import streamlit.components.v1 as components
+
 
 
 import sqlite3
@@ -95,6 +98,8 @@ DEFAULTS = {
     "arc_score":    None,
     "z_score":      None,
     "y_score":      None,
+    "per_score": None,
+    "dtw_score": None,
     "record_error": None,
 }
 for k, v in DEFAULTS.items():
@@ -574,13 +579,14 @@ vosk_model = load_model()
 def transcribe_wav(filepath):
 
     with sf.SoundFile(filepath) as f:
-        rec = KaldiRecognizer(vosk_model, f.samplerate)
-        rec.SetWords(False)
+        grammar = json.dumps(words + ["[unk]"])
+        rec = KaldiRecognizer(vosk_model, f.samplerate, grammar)
+        rec.SetWords(True)
 
         transcript = ""
 
         while True:
-            data = f.read(4000, dtype="int16")
+            data = f.read(8000, dtype="int16")
             
             if len(data) == 0:
                 break
@@ -938,14 +944,22 @@ if page == "New Assessment":
 
             <div class="arc-sub">
             <div class="arc-sub-num">{st.session_state.z_score:.1f}</div>
-            <div class="arc-sub-label">Word Score (Z)</div>
+            <div class="arc-sub-label">Word Intelligibility (Z)</div>
+            </div>
+
+            <div class="arc-sub">
+            <div class="arc-sub-num">{st.session_state.per_score:.1f}</div>
+            <div class="arc-sub-label">Phonetic Accuracy (PER)</div>
+            </div>
+
+            <div class="arc-sub">
+            <div class="arc-sub-num">{st.session_state.dtw_score:.1f}</div>
+            <div class="arc-sub-label">Acoustic Similarity (DTW)</div>
             </div>
 
             <div class="arc-sub">
             <div class="arc-sub-num">{st.session_state.y_score:.1f}</div>
             <div class="arc-sub-label">Sentence Score (Y)</div>
-            </div>
-
             </div>
 
             </div>
@@ -1038,19 +1052,48 @@ if page == "New Assessment":
                     # -----------------------
                     # STEP 2: word scoring
                     # -----------------------
-                    status.text("Scoring word recordings (Z score)...")
+                    status.text("Scoring word recordings (Z + PER + DTW)...")
                     progress.progress(30)
 
-                    z_result = subprocess.run(
+                    # run external scoring pipeline
+                    result = subprocess.run(
                         [sys.executable, "score_z.py"],
                         capture_output=True,
-                        text=True,
-                        timeout=120
+                        text=True
                     )
 
-                    if z_result.returncode != 0:
-                        st.error(f"Word scoring failed:\n{z_result.stderr}")
+                    if result.returncode != 0:
+                        st.error("Word scoring failed")
+                        st.error(result.stderr)
                         st.stop()
+
+                    # load results produced by score_z.py
+                    import pandas as pd
+
+                    if not os.path.exists("z_results.csv"):
+                        st.error("z_results.csv was not created by score_z.py")
+                        st.stop()
+
+                    z_df = pd.read_csv("z_results.csv")
+
+                    # validate expected columns
+                    required_cols = ["z", "per", "dtw"]
+                    for col in required_cols:
+                        if col not in z_df.columns:
+                            st.error(f"Missing column '{col}' in z_results.csv")
+                            st.stop()
+
+                    # compute averages
+                    z_score = float(z_df["z"].mean())
+                    per_score = float(z_df["per"].mean())
+                    dtw_score = float(z_df["dtw"].mean())
+
+                    # store in session state
+                    st.session_state.z_score = z_score
+                    st.session_state.per_score = per_score
+                    st.session_state.dtw_score = dtw_score
+
+                    
 
                     # -----------------------
                     # STEP 3: sentence scoring
@@ -1058,16 +1101,31 @@ if page == "New Assessment":
                     status.text("Scoring sentence recordings (Y score)...")
                     progress.progress(55)
 
-                    y_result = subprocess.run(
-                        [sys.executable, "score_y.py"],
-                        capture_output=True,
-                        text=True,
-                        timeout=120
-                    )
+                    rows = []
 
-                    if y_result.returncode != 0:
-                        st.error(f"Sentence scoring failed:\n{y_result.stderr}")
-                        st.stop()
+                    for row in sentences:
+
+                        utt_id = row["utt_id"]
+                        reference = row["reference"]
+
+                        wav_path = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
+
+                        hypothesis = decode_sentence(wav_path, vosk_model)
+
+                        from difflib import SequenceMatcher
+                        score = SequenceMatcher(None, reference, hypothesis).ratio() * 100
+
+                        rows.append({
+                            "utt_id": utt_id,
+                            "reference": reference,
+                            "hypothesis": hypothesis,
+                            "y": round(score, 2)
+                        })
+
+                    y_df = pd.DataFrame(rows)
+                    y_df.to_csv("y_results.csv", index=False)
+
+                    
 
                     # -----------------------
                     # STEP 4: load results
