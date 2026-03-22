@@ -24,3 +24,5 @@ warmup_audio.wav
 audio_noise/
 audio_prompts/
 audio_stretch/
+
+backup_arc/

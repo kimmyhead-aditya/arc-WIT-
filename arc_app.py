@@ -17,12 +17,13 @@ st.set_page_config(
 # =======================
 import csv
 import os
-import subprocess
 import numpy as np
+import pandas as pd
 import sounddevice as sd
 import soundfile as sf
 from score_z import decode_word
 from score_y import decode_sentence
+from scoring import score_words_inline
 import streamlit.components.v1 as components
 
 
@@ -973,10 +974,16 @@ if page == "New Assessment":
 
             import pandas as pd
 
-            try:
-                z_df = pd.read_csv("z_results.csv")
+            
+               
 
-                st.markdown("### Within-Session Consistency Check")
+            st.markdown("### Within-Session Consistency Check")
+
+            z_df = st.session_state.get("z_df", None)
+
+            if z_df is None or z_df.empty:
+                st.info("No data available for consistency analysis.")
+            else:
 
                 repeat_words = (
                     z_df.groupby("reference")
@@ -1013,9 +1020,6 @@ if page == "New Assessment":
                 else:
                     st.info("No repeated words found in this test.")
 
-            except Exception as e:
-                st.warning("Consistency analysis unavailable.")
-
             # ==========================
 
             if st.button("🔄  Start New Assessment"):
@@ -1042,46 +1046,15 @@ if page == "New Assessment":
                     # -----------------------
                     # STEP 1: cleanup
                     # -----------------------
-                    status.text("Preparing scoring environment...")
-                    progress.progress(10)
-
-                    for f in ("z_results.csv", "y_results.csv"):
-                        if os.path.exists(f):
-                            os.remove(f)
-
+                    
                     # -----------------------
-                    # STEP 2: word scoring
+                    # STEP 2: word scoring (INLINE)
                     # -----------------------
                     status.text("Scoring word recordings (Z + PER + DTW)...")
                     progress.progress(30)
 
-                    # run external scoring pipeline
-                    result = subprocess.run(
-                        [sys.executable, "score_z.py"],
-                        capture_output=True,
-                        text=True
-                    )
-
-                    if result.returncode != 0:
-                        st.error("Word scoring failed")
-                        st.error(result.stderr)
-                        st.stop()
-
-                    # load results produced by score_z.py
-                    import pandas as pd
-
-                    if not os.path.exists("z_results.csv"):
-                        st.error("z_results.csv was not created by score_z.py")
-                        st.stop()
-
-                    z_df = pd.read_csv("z_results.csv")
-
-                    # validate expected columns
-                    required_cols = ["z", "per", "dtw"]
-                    for col in required_cols:
-                        if col not in z_df.columns:
-                            st.error(f"Missing column '{col}' in z_results.csv")
-                            st.stop()
+                    z_df = score_words_inline(WORD_AUDIO_DIR, words, vosk_model)
+                    
 
                     # compute averages
                     z_score = float(z_df["z"].mean())
@@ -1092,6 +1065,7 @@ if page == "New Assessment":
                     st.session_state.z_score = z_score
                     st.session_state.per_score = per_score
                     st.session_state.dtw_score = dtw_score
+                    st.session_state.z_df = z_df
 
                     
 
@@ -1110,10 +1084,17 @@ if page == "New Assessment":
 
                         wav_path = os.path.join(SENT_AUDIO_DIR, f"{utt_id}.wav")
 
-                        hypothesis = decode_sentence(wav_path, vosk_model)
+                        if not os.path.exists(wav_path):
+                            hypothesis = ""
+                            st.warning(f"Missing audio for {utt_id}")
+                        else:
+                            hypothesis = decode_sentence(wav_path, vosk_model)
 
                         from difflib import SequenceMatcher
-                        score = SequenceMatcher(None, reference, hypothesis).ratio() * 100
+                        if not hypothesis.strip():
+                            score = 0.0
+                        else:
+                            score = SequenceMatcher(None, reference, hypothesis).ratio() * 100
 
                         rows.append({
                             "utt_id": utt_id,
@@ -1123,7 +1104,7 @@ if page == "New Assessment":
                         })
 
                     y_df = pd.DataFrame(rows)
-                    y_df.to_csv("y_results.csv", index=False)
+                    
 
                     
 
@@ -1135,16 +1116,12 @@ if page == "New Assessment":
 
                     import pandas as pd
 
-                    if not os.path.exists("z_results.csv"):
-                        st.error("score_z.py did not produce z_results.csv")
-                        st.stop()
+                    
 
-                    if not os.path.exists("y_results.csv"):
-                        st.error("score_y.py did not produce y_results.csv")
-                        st.stop()
+                    
 
-                    z_df = pd.read_csv("z_results.csv")
-                    y_df = pd.read_csv("y_results.csv")
+                    
+                    
 
                     # detect repeated words
                     repeat_words = (
@@ -1152,13 +1129,9 @@ if page == "New Assessment":
                         .filter(lambda x: len(x) > 1)
                     )
 
-                    if "z" not in z_df.columns:
-                        st.error("z_results.csv must contain a 'z' column.")
-                        st.stop()
+                    
 
-                    if "y" not in y_df.columns:
-                        st.error("y_results.csv must contain a 'y' column.")
-                        st.stop()
+                    
 
                     # -----------------------
                     # STEP 5: compute ARC
@@ -1192,8 +1165,7 @@ if page == "New Assessment":
 
                     st.rerun()
 
-                except subprocess.TimeoutExpired:
-                    st.error("Scoring timed out.")
+                
 
                 except FileNotFoundError as e:
                     st.error(f"Scoring script not found: {e}")
