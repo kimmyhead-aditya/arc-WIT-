@@ -1094,7 +1094,13 @@ if page == "New Assessment":
                         if not hypothesis.strip():
                             score = 0.0
                         else:
-                            score = SequenceMatcher(None, reference, hypothesis).ratio() * 100
+                            wer = compute_wer(reference, hypothesis)
+
+                            # 🔥 amplified Y
+                            score = (1 - wer) ** 1.5 * 100
+
+                            # clamp
+                            score = max(0, min(100, score))
 
                         rows.append({
                             "utt_id": utt_id,

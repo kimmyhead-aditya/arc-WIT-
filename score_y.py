@@ -20,25 +20,10 @@ SAMPLE_RATE = 16000
 def sentence_score(ref, hyp):
     return SequenceMatcher(None, ref, hyp).ratio() * 100
 
-def decode_sentence(wav_path,model):
-    wf = wave.open(wav_path, "rb")
-    rec = KaldiRecognizer(model, SAMPLE_RATE)
-    rec.SetWords(True)
-    
-    text = ""
+from asr import decode_audio
 
-    while True:
-        data = wf.readframes(8000)
-        if len(data) == 0:
-            break
-        if rec.AcceptWaveform(data):
-            result = json.loads(rec.Result())
-            text += result.get("text", "")
-
-    final = json.loads(rec.FinalResult())
-    text += final.get("text", "")
-
-    return text.strip()
+def decode_sentence(wav_path, model):
+    return decode_audio(wav_path, model)
 
 if __name__ == "__main__":
     with open(REFERENCE_FILE, newline="", encoding="utf-8") as ref_f, \

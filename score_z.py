@@ -35,18 +35,16 @@ GRAMMAR = json.dumps([[w] for w in WORDLIST] + [["[unk]"]], ensure_ascii=False)
 # ----------------------------------------
 
 
-def decode_word(wav_path):
+def decode_word(wav_path, model):
+
     if not os.path.exists(wav_path):
         return "", 0.0
 
     wf = wave.open(wav_path, "rb")
 
-    assert wf.getnchannels() == 1
-    assert wf.getsampwidth() == 2
-    assert wf.getframerate() == SAMPLE_RATE
-
     rec = KaldiRecognizer(model, SAMPLE_RATE, GRAMMAR)
     rec.SetWords(True)
+
     while True:
         data = wf.readframes(8000)
         if len(data) == 0:
@@ -59,12 +57,9 @@ def decode_word(wav_path):
     text = text.split()[0] if text else ""
 
     confidence = 0.0
-    if "confidence" in result:
-        confidence = float(result["confidence"])
-    elif "result" in result and len(result["result"]) > 0:
-        confidence = sum(w["conf"] for w in result["result"]) / len(result["result"])
+    if "result" in result and len(result["result"]) > 0:
+        confidence = result["result"][0].get("conf", 0.0)
 
-    del rec
     return text, confidence
 
 
@@ -79,12 +74,14 @@ if __name__ == "__main__":
         )
         writer.writeheader()
 
+        model = Model(MODEL_PATH)
+
         for row in reader:
             utt_id = row["utt_id"]
             reference = row["reference"]
 
             wav_path = os.path.join(AUDIO_DIR, f"{utt_id}.wav")
-            hypothesis, confidence = decode_word(wav_path)
+            hypothesis, confidence = decode_word(wav_path,model)
 
             # confidence-based intelligibility
             z = max(0, min(100, confidence * 100))
