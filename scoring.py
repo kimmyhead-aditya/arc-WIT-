@@ -33,9 +33,13 @@ def compute_wer(ref, hyp):
     return dp[n][m] / max(1, n)
 
 def score_words_inline(word_dir, words, model):
+    import time
+    _t0 = time.time()
     results = []
 
     for i, ref in enumerate(words):
+        _loop_start = time.time()
+
         wav_path = os.path.join(word_dir, f"utt{i+1:02d}.wav")
 
         if not os.path.exists(wav_path):
@@ -49,26 +53,29 @@ def score_words_inline(word_dir, words, model):
             continue
 
         hyp, _ = decode_word(wav_path, model)
+        t_decode = time.time() - _loop_start
+        _t1 = time.time()
 
         ref_clean = ref.strip()
         hyp_clean = hyp.strip()
 
         wer = compute_wer(ref_clean, hyp_clean)
         z_asr = (1 - wer) * 100
-
         per = compute_per(ref_clean, hyp_clean)
+        t_per = time.time() - _t1
+        _t2 = time.time()
 
         ref_audio_path = f"audio_prompts_wav/utt{i+1:02d}.wav"
-
         if os.path.exists(ref_audio_path):
             dtw = compute_dtw(wav_path, ref_audio_path)
-            dtw = min(100, dtw * 2.5)  # 🔥 scaling fix
         else:
-            dtw = 0
+            dtw = 50
+        t_dtw = time.time() - _t2
 
-        z = 0.6 * z_asr + 0.25 * per + 0.15 * dtw
+        z = 0.65 * z_asr + 0.25 * dtw + 0.10 * per
         z = max(0, min(100, z))
-        
+
+        print(f"[TIMING] word '{ref}' → decode:{t_decode:.2f}s  per:{t_per:.2f}s  dtw:{t_dtw:.2f}s  total:{time.time()-_loop_start:.2f}s")
 
         results.append({
             "reference": ref,
@@ -78,6 +85,7 @@ def score_words_inline(word_dir, words, model):
             "dtw": dtw
         })
 
+    print(f"[TIMING] total score_words_inline: {time.time()-_t0:.2f}s")
     return pd.DataFrame(results)
 
 

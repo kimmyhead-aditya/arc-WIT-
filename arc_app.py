@@ -23,7 +23,7 @@ import sounddevice as sd
 import soundfile as sf
 from score_z import decode_word
 from score_y import decode_sentence
-from scoring import score_words_inline
+from scoring import score_words_inline, compute_wer
 import streamlit.components.v1 as components
 
 
@@ -54,6 +54,10 @@ def init_db():
             z_score REAL,
             y_score REAL,
             arc_score REAL,
+            per_score REAL,
+            dtw_score REAL,
+            severity TEXT,
+            clinician_notes TEXT,  
             FOREIGN KEY(patient_id) REFERENCES patients(patient_id)
         )
     """)
@@ -102,6 +106,7 @@ DEFAULTS = {
     "per_score": None,
     "dtw_score": None,
     "record_error": None,
+    "clinician_notes":"",
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -573,6 +578,11 @@ import json
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "model")
 @st.cache_resource
 def load_model():
+    import librosa
+    import numpy as np
+    # warm up librosa so first DTW call has no cold-start penalty
+    _dummy = np.zeros(16000, dtype=np.float32)
+    librosa.feature.mfcc(y=_dummy, sr=16000, n_mfcc=13)
     return Model(MODEL_PATH)
 
 vosk_model = load_model()
@@ -619,17 +629,7 @@ def normalize_text(text):
     return text.strip().replace("।", "").replace(".", "")
 
 def severity_label(score):
-    """Return severity category and colour based on ARC score."""
-    if score >= 90:
-        return "Normal / Unimpaired", "#D1FAE5", "#065F46"
-    elif score >= 75:
-        return "Mild Impairment", "#FEF3C7", "#92400E"
-    elif score >= 50:
-        return "Moderate Impairment", "#FED7AA", "#9A3412"
-    elif score >= 25:
-        return "Severe Impairment", "#FEE2E2", "#991B1B"
-    else:
-        return "Profound Impairment", "#FEE2E2", "#7F1D1D"
+    return None, None, None
 
 
 def record_error_display():
@@ -650,17 +650,22 @@ def save_assessment():
         VALUES (?, ?)
     """, (st.session_state.patient_id, datetime.now().isoformat()))
 
+    label, _, _ = severity_label(st.session_state.arc_score)
     c.execute("""
         INSERT INTO assessments
-        (patient_id, clinician, date, z_score, y_score, arc_score)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (patient_id, clinician, date, z_score, y_score, arc_score, per_score, dtw_score, severity, clinician_notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         st.session_state.patient_id,
         st.session_state.clinician,
         datetime.now().isoformat(),
         st.session_state.z_score,
         st.session_state.y_score,
-        st.session_state.arc_score
+        st.session_state.arc_score,
+        st.session_state.per_score,
+        st.session_state.dtw_score,
+        label,
+        st.session_state.clinician_notes
     ))
 
     conn.commit()
@@ -724,7 +729,9 @@ if page == "New Assessment":
     # =======================
     elif st.session_state.phase == "warmup":
 
-        warmup_words = ["एक", "दो"]
+        # phonetically rich warmup words — covers stops, aspirates, nasals
+        # chosen to exercise the full articulatory range the test depends on
+        warmup_words = ["पानी", "हाथ"]
         total = len(warmup_words)
         idx   = st.session_state.index
 
@@ -754,25 +761,37 @@ if page == "New Assessment":
 
             with col2:
                 if st.button("⏹ Stop", disabled=not st.session_state.recording):
-
                     filename = "warmup_audio.wav"
                     rms = stop_recording_and_save(filename)
 
-                    if rms:
+                    MIN_RMS = 0.003
+                    MAX_RMS = 0.5
 
-                        MIN_RMS = 0.003
-                        MAX_RMS = 0.5
+                    # explicit False check — rms=0.0 is a valid failure, not a pass
+                    if rms is False:
+                        st.error("Recording failed. Check microphone connection and retry.")
 
-                        if rms < MIN_RMS:
-                            st.error("Speech too soft. Please speak louder and retry.")
+                    elif rms < MIN_RMS:
+                        st.error(
+                            f"Signal too weak (RMS: {rms:.4f}). "
+                            "Please speak at normal conversational volume "
+                            "and ensure microphone is within 7–10 cm."
+                        )
 
-                        elif rms > MAX_RMS:
-                            st.error("Audio too loud or distorted. Reduce microphone gain.")
+                    elif rms > MAX_RMS:
+                        st.error(
+                            f"Signal clipping (RMS: {rms:.4f}). "
+                            "Microphone gain is too high — reduce input volume "
+                            "in system sound settings and retry."
+                        )
 
-                        else:
-                            st.success("Microphone calibration successful.")
-                            st.session_state.index += 1
-                            st.rerun()
+                    else:
+                        st.success(
+                            f"Microphone calibrated ✓  "
+                            f"(RMS: {rms:.4f} — within acceptable range)"
+                        )
+                        st.session_state.index += 1
+                        st.rerun()
 
         else:
             st.session_state.phase = "word"
@@ -795,6 +814,7 @@ if page == "New Assessment":
 
             st.markdown('<div class="arc-phase-label">Word Reading</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="arc-sentence-prompt">{words[idx]}</div>', unsafe_allow_html=True)
+            
             
             st.caption(
             "For standardised testing please avoid playing the prompt more than twice unless the patient did not hear it clearly."
@@ -862,6 +882,9 @@ if page == "New Assessment":
 
             st.markdown('<div class="arc-phase-label">Sentence Reading</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="arc-sentence-prompt">{sentence}</div>', unsafe_allow_html=True)
+            st.caption(
+                "For standardised testing please avoid playing the prompt more than once unless the patient did not hear it clearly."
+            )
 
             record_error_display()
 
@@ -920,6 +943,14 @@ if page == "New Assessment":
         </div>
         """, unsafe_allow_html=True)
 
+        st.session_state.clinician_notes = st.text_area(
+            "Clinical Observations",
+            value=st.session_state.clinician_notes,
+            placeholder="e.g. Patient fatigued today. Medication changed last week. Recorded at 7cm with headset.",
+            height=100,
+            help="These notes are saved with the assessment and visible in Patient History."
+        )
+
         record_error_display()
 
         # =======================
@@ -928,7 +959,7 @@ if page == "New Assessment":
         if st.session_state.arc_score is not None:
 
             score = st.session_state.arc_score
-            sev_label, sev_bg, sev_fg = severity_label(score)
+            
 
             st.markdown(
             f"""
@@ -937,9 +968,7 @@ if page == "New Assessment":
             <div class="arc-score-label">ARC Score</div>
             <div class="arc-score-num">{score:.1f}</div>
 
-            <div class="arc-severity" style="background:{sev_bg};color:{sev_fg}">
-            {sev_label}
-            </div>
+            
 
             <div class="arc-sub-scores">
 
@@ -1029,7 +1058,107 @@ if page == "New Assessment":
 
                 st.rerun()
 
+            # ==========================
+            # PHONETIC RADAR CHART
+            # ==========================
 
+            st.markdown("### Phonetic Category Profile")
+            st.caption("Accuracy by phonetic category based on words attempted in this session.")
+
+            import plotly.graph_objects as go
+
+            CATEGORY_MAP = {
+                "Stops":        ["क", "ग", "ट", "ड", "त", "द", "प", "ब"],
+                "Aspirated":    ["ख", "घ", "छ", "झ", "ठ", "ढ", "थ", "ध", "फ", "भ"],
+                "Nasals":       ["न", "म"],
+                "Fricatives":   ["स", "ह"],
+                "Liquids and Glides": ["य", "र", "ल", "व"],
+            }
+
+            category_scores = {}
+
+            for category, chars in CATEGORY_MAP.items():
+                matching = z_df[
+                    z_df["reference"].apply(
+                        lambda w: any(c in w for c in chars)
+                    )
+                ]
+                if not matching.empty:
+                    category_scores[category] = round(matching["per"].mean(), 1)
+                else:
+                    category_scores[category] = None
+
+            labels  = list(category_scores.keys())
+            values  = [category_scores[k] if category_scores[k] is not None else 0 for k in labels]
+            has_data = [category_scores[k] is not None for k in labels]
+
+            # close the polygon
+            labels_closed  = labels + [labels[0]]
+            values_closed  = values + [values[0]]
+
+            fig = go.Figure()
+
+            fig.add_trace(go.Scatterpolar(
+                r=values_closed,
+                theta=labels_closed,
+                fill="toself",
+                fillcolor="rgba(37, 99, 235, 0.12)",
+                line=dict(color="#2563EB", width=2.5),
+                marker=dict(size=7, color="#2563EB"),
+                name="Phonetic Accuracy",
+                hovertemplate="%{theta}: %{r:.1f}%<extra></extra>",
+            ))
+
+            # grey dot for missing categories
+            missing_labels = [labels[i] for i in range(len(labels)) if not has_data[i]]
+            if missing_labels:
+                fig.add_trace(go.Scatterpolar(
+                    r=[0] * len(missing_labels),
+                    theta=missing_labels,
+                    mode="markers",
+                    marker=dict(size=7, color="#D1D5DB"),
+                    name="No data",
+                    hovertemplate="%{theta}: No words tested<extra></extra>",
+                ))
+
+            fig.update_layout(
+                polar=dict(
+                    bgcolor="#F7F8FA",
+                    angularaxis=dict(
+                        tickfont=dict(family="DM Sans", size=13, color="#1A1D23"),
+                        linecolor="#E2E5EC",
+                        rotation=90,
+                        direction="clockwise",
+                    ),
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, 100],
+                        tickvals=[0, 25, 50, 75, 100],
+                        tickfont=dict(family="DM Sans", size=10, color="#9CA3AF"),
+                        gridcolor="#E2E5EC",
+                        linecolor="#E2E5EC",
+                    ),
+                ),
+                showlegend=False,
+                paper_bgcolor="#FFFFFF",
+                plot_bgcolor="#FFFFFF",
+                margin=dict(t=20, b=20, l=40, r=40),
+                height=380,
+                font=dict(family="DM Sans"),
+                dragmode=False,
+            )
+
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                config={
+                    "staticPlot": True,        # disables ALL interaction — no drag, no zoom, no rotate
+                    "displayModeBar": False,   # hides the plotly toolbar
+                }
+            )
+
+            if st.button("↺  Reset Chart View"):
+                st.rerun()
         
         # =======================
         # COMPUTE ARC SCORE
@@ -1090,10 +1219,12 @@ if page == "New Assessment":
                         else:
                             hypothesis = decode_sentence(wav_path, vosk_model)
 
-                        from difflib import SequenceMatcher
+                        reference = normalize_text(reference)
+                        hypothesis = normalize_text(hypothesis)
                         if not hypothesis.strip():
                             score = 0.0
                         else:
+                            
                             wer = compute_wer(reference, hypothesis)
 
                             # 🔥 amplified Y
@@ -1186,10 +1317,12 @@ elif page == "Patient History":
     st.markdown("### Patient History")
 
     conn = sqlite3.connect("arc.db")
-    c = conn.cursor()
 
     try:
+        import pandas as pd
+        import plotly.graph_objects as go
 
+        # load all assessments
         query = """
         SELECT
             a.patient_id,
@@ -1197,29 +1330,178 @@ elif page == "Patient History":
             a.date,
             a.z_score,
             a.y_score,
-            a.arc_score
+            a.arc_score,
+            a.per_score,
+            a.dtw_score,
+            a.clinician_notes
         FROM assessments a
-        ORDER BY a.date DESC
+        ORDER BY a.date ASC
         """
 
-        import pandas as pd
         df = pd.read_sql_query(query, conn)
 
         if df.empty:
             st.info("No assessments recorded yet.")
             st.stop()
 
-        # Format date
-        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d %H:%M")
+        df["date"] = pd.to_datetime(df["date"])
+
+        # -------------------------
+        # PATIENT SELECTOR
+        # -------------------------
+        patients = sorted(df["patient_id"].unique().tolist())
+
+        selected = st.selectbox(
+            "Select Patient",
+            patients,
+            index=0
+        )
+
+        patient_df = df[df["patient_id"] == selected].copy()
+        patient_df = patient_df.sort_values("date").reset_index(drop=True)
+        patient_df["session"] = [f"S{i+1}" for i in range(len(patient_df))]
+
+        st.markdown(f"""
+        <div class="arc-info-card">
+            <strong>Patient:</strong> {selected} &nbsp;·&nbsp;
+            <strong>Total Sessions:</strong> {len(patient_df)} &nbsp;·&nbsp;
+            <strong>First Assessment:</strong> {patient_df['date'].iloc[0].strftime('%d %b %Y')} &nbsp;·&nbsp;
+            <strong>Last Assessment:</strong> {patient_df['date'].iloc[-1].strftime('%d %b %Y')}
+        </div>
+        """, unsafe_allow_html=True)
+
+        # -------------------------
+        # TREND CHART
+        # -------------------------
+        st.markdown("### Score Trajectory")
+        st.caption("Each point is one full ARC assessment session. Track how speech metrics change over time.")
+
+        fig = go.Figure()
+
+        # ARC
+        fig.add_trace(go.Scatter(
+            x=patient_df["session"],
+            y=patient_df["arc_score"],
+            mode="lines+markers",
+            name="ARC Score",
+            line=dict(color="#2563EB", width=3),
+            marker=dict(size=9, color="#2563EB"),
+            hovertemplate="<b>%{x}</b><br>ARC: %{y:.1f}<extra></extra>",
+        ))
+
+        # Z
+        fig.add_trace(go.Scatter(
+            x=patient_df["session"],
+            y=patient_df["z_score"],
+            mode="lines+markers",
+            name="Word Score (Z)",
+            line=dict(color="#10B981", width=2, dash="dot"),
+            marker=dict(size=7, color="#10B981"),
+            hovertemplate="<b>%{x}</b><br>Z: %{y:.1f}<extra></extra>",
+        ))
+
+        # Y
+        fig.add_trace(go.Scatter(
+            x=patient_df["session"],
+            y=patient_df["y_score"],
+            mode="lines+markers",
+            name="Sentence Score (Y)",
+            line=dict(color="#F59E0B", width=2, dash="dot"),
+            marker=dict(size=7, color="#F59E0B"),
+            hovertemplate="<b>%{x}</b><br>Y: %{y:.1f}<extra></extra>",
+        ))
+
+        fig.update_layout(
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#F7F8FA",
+            font=dict(family="DM Sans", size=13, color="#1A1D23"),
+            yaxis=dict(
+                range=[0, 100],
+                gridcolor="#E2E5EC",
+                title="Score",
+                tickfont=dict(size=11, color="#6B7280"),
+            ),
+            xaxis=dict(
+                gridcolor="#E2E5EC",
+                title="Session",
+                tickfont=dict(size=11, color="#6B7280"),
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                font=dict(size=12),
+            ),
+            margin=dict(t=40, b=40, l=40, r=20),
+            height=380,
+            hovermode="x unified",
+        )
+
+        st.plotly_chart(fig, use_container_width=True, config={
+            "displayModeBar": False,
+        })
+
+        # -------------------------
+        # SESSION DETAIL TABLE
+        # -------------------------
+        st.markdown("### Session Log")
+
+        display_df = patient_df[[
+            "session", "date", "clinician",
+            "arc_score", "z_score", "y_score",
+            "per_score", "dtw_score", "clinician_notes"
+        ]].copy()
+
+        display_df["date"] = display_df["date"].dt.strftime("%d %b %Y  %H:%M")
+        display_df.columns = [
+            "Session", "Date", "Clinician",
+            "ARC", "Z (Word)", "Y (Sentence)",
+            "PER", "DTW", "Clinical Notes"
+        ]
 
         st.dataframe(
-            df,
+            display_df,
             use_container_width=True,
             hide_index=True
         )
+
+        # -------------------------
+        # CHANGE SUMMARY
+        # -------------------------
+        if len(patient_df) >= 2:
+            st.markdown("### Change from First to Last Session")
+
+            first = patient_df.iloc[0]
+            last  = patient_df.iloc[-1]
+
+            def delta_card(label, first_val, last_val):
+                delta = last_val - first_val
+                color = "#10B981" if delta >= 0 else "#EF4444"
+                arrow = "▲" if delta >= 0 else "▼"
+                st.markdown(f"""
+                <div class="arc-info-card" style="text-align:center">
+                    <div style="font-size:11px;font-weight:600;letter-spacing:1px;
+                                text-transform:uppercase;color:#6B7280">{label}</div>
+                    <div style="font-size:28px;font-family:'DM Serif Display',serif;
+                                color:#1A1D23;margin:4px 0">{last_val:.1f}</div>
+                    <div style="font-size:14px;font-weight:600;color:{color}">
+                        {arrow} {abs(delta):.1f} pts from Session 1
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                delta_card("ARC Score", first["arc_score"], last["arc_score"])
+            with col2:
+                delta_card("Word Score (Z)", first["z_score"], last["z_score"])
+            with col3:
+                delta_card("Sentence Score (Y)", first["y_score"], last["y_score"])
 
     except Exception as e:
         st.error(f"Failed to load patient history: {e}")
 
     finally:
-        conn.close()    
+        conn.close() 

@@ -30,7 +30,7 @@ with open(WORD_FILE, encoding="utf-8") as f:
     WORDLIST = [w.strip() for w in f if w.strip()]
 
 # build constrained grammar for Vosk
-GRAMMAR = json.dumps([[w] for w in WORDLIST] + [["[unk]"]], ensure_ascii=False)
+GRAMMAR = json.dumps(WORDLIST + ["[unk]"], ensure_ascii=False)
 
 # ----------------------------------------
 
